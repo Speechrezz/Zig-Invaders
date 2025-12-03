@@ -50,8 +50,8 @@ pub fn draw(self: @This()) void {
 
     rl.drawRectangleRounded(
         self.bounds,
-        0.1,
-        2,
+        0.2,
+        4,
         rl.colorAlpha(.green, alpha),
     );
 }

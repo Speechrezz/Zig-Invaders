@@ -6,7 +6,10 @@ const Random = @import("Random.zig");
 const Enemy = @This();
 
 bounds: rl.Rectangle,
-is_alive: bool = true,
+group: *Group,
+state: State = .alive,
+
+const State = enum { alive, dying, dead };
 
 const enemy_width = 40.0;
 const enemy_height = 20.0;
@@ -17,11 +20,12 @@ const enemy_rows = 5;
 
 const seconds_per_move = 0.5;
 const distance_per_move = 4.0;
-const distance_per_drop = 20.0;
+const distance_per_drop = 24.0;
 
+const pause_time_seconds = 0.2;
 const reload_time_seconds = 1.2;
 
-pub fn init(self: *@This()) void {
+pub fn init(self: *@This(), group: *Group) void {
     self.* = .{
         .bounds = .{
             .x = 0.0,
@@ -29,7 +33,12 @@ pub fn init(self: *@This()) void {
             .width = 40.0,
             .height = 30.0,
         },
+        .group = group,
     };
+}
+
+pub fn isAlive(self: *const @This()) bool {
+    return self.state == .alive;
 }
 
 fn shoot(self: *@This(), game: *Game) void {
@@ -45,7 +54,7 @@ pub fn setPosition(self: *@This(), position: rl.Vector2) void {
 }
 
 pub fn update(self: *@This(), game: *Game) void {
-    if (!self.is_alive or !game.player_bullet.is_active) return;
+    if (!self.isAlive() or !game.player_bullet.is_active) return;
 
     if (game.player_bullet.bounds.checkCollision(self.bounds)) {
         game.player_bullet.is_active = false;
@@ -54,13 +63,32 @@ pub fn update(self: *@This(), game: *Game) void {
 }
 
 fn kill(self: *@This(), game: *Game) void {
-    self.is_alive = false;
-    game.enemy_group.kill(game, self);
+    self.state = .dying;
+    self.group.kill(game, self);
+}
+
+fn onUnpause(self: *@This()) void {
+    if (self.state == .dying) {
+        self.state = .dead;
+    }
 }
 
 pub fn draw(self: @This()) void {
-    if (self.is_alive) {
-        rl.drawRectangleRounded(self.bounds, 0.25, 2, .white);
+    switch (self.state) {
+        .alive => {
+            rl.drawRectangleRounded(self.bounds, 0.25, 2, .white);
+        },
+        .dying => {
+            const center_x = self.bounds.x + self.bounds.width * 0.5;
+            const center_y = self.bounds.y + self.bounds.height * 0.5;
+            rl.drawEllipseLinesV(
+                .{ .x = center_x, .y = center_y },
+                0.6 * self.bounds.width,
+                0.6 * self.bounds.height,
+                .white,
+            );
+        },
+        else => {},
     }
 }
 
@@ -72,9 +100,10 @@ pub const Group = struct {
     time_passed: f32 = 0.0,
     time_passed_reload: f32 = 0.0,
     move_direction: f32 = 1.0,
-    state: State = .horizontal,
+    state: GroupState = .horizontal,
+    is_paused: bool = false,
 
-    const State = enum { horizontal, drop };
+    const GroupState = enum { horizontal, drop };
 
     pub fn init(self: *@This(), position: rl.Vector2) void {
         self.* = .{
@@ -90,7 +119,7 @@ pub const Group = struct {
 
         for (&self.enemies) |*row| {
             for (row) |*enemy| {
-                enemy.init();
+                enemy.init(self);
                 self.alive_enemies.appendAssumeCapacity(enemy);
             }
         }
@@ -108,6 +137,8 @@ pub const Group = struct {
 
         if (self.alive_enemies.items.len == 0) {
             game.win();
+        } else {
+            self.pause();
         }
     }
 
@@ -122,21 +153,24 @@ pub const Group = struct {
         switch (self.state) {
             .horizontal => {
                 self.bounds.x += adjusted_distance_per_move * self.move_direction;
-                const screen_width: f32 = @floatFromInt(game.level.screen_width);
+                self.updatePositions();
 
-                if (self.bounds.x <= 0) {
-                    self.bounds.x = 0;
-                    self.move_direction = 1.0;
-                    self.state = .drop;
-                } else if (self.bounds.x + self.bounds.width >= screen_width) {
-                    self.bounds.x = screen_width - self.bounds.width;
-                    self.move_direction = -1.0;
-                    self.state = .drop;
+                const screen_width: f32 = @floatFromInt(game.level.screen_width);
+                for (self.alive_enemies.items) |enemy| {
+                    const is_out_left = enemy.bounds.x <= 0;
+                    const is_out_right = enemy.bounds.x + enemy.bounds.width >= screen_width;
+
+                    if (is_out_left or is_out_right) {
+                        self.state = .drop;
+                        break;
+                    }
                 }
             },
             .drop => {
                 self.bounds.y += distance_per_drop;
                 self.state = .horizontal;
+                self.move_direction *= -1.0;
+                self.updatePositions();
             },
         }
     }
@@ -168,17 +202,41 @@ pub const Group = struct {
         }
     }
 
+    fn pause(self: *@This()) void {
+        self.is_paused = true;
+        self.time_passed = 0.0;
+    }
+
+    fn unpause(self: *@This()) void {
+        self.is_paused = false;
+        self.time_passed -= pause_time_seconds;
+
+        for (&self.enemies) |*row| {
+            for (row) |*enemy| {
+                enemy.onUnpause();
+            }
+        }
+    }
+
     pub fn update(self: *@This(), game: *Game, delta_time: f32) void {
         defer self.time_passed += delta_time;
+
+        if (self.is_paused) {
+            if (self.time_passed >= pause_time_seconds) {
+                self.unpause();
+            }
+
+            return;
+        }
+
         defer self.time_passed_reload += delta_time;
 
         const dead_enemy_ratio = @as(f32, @floatFromInt(self.alive_enemies.items.len)) / @as(f32, @floatFromInt(self.alive_enemies_buffer.len));
-        const adjusted_seconds_per_move = seconds_per_move * (0.1 + 0.9 * dead_enemy_ratio);
+        const adjusted_seconds_per_move = seconds_per_move * (0.05 + 0.95 * dead_enemy_ratio);
 
         if (self.time_passed >= adjusted_seconds_per_move) {
             self.time_passed -= adjusted_seconds_per_move;
             self.moveStep(game);
-            self.updatePositions();
             self.tryShoot(game, dead_enemy_ratio);
         }
 
@@ -190,8 +248,10 @@ pub const Group = struct {
     }
 
     pub fn draw(self: *@This()) void {
-        for (self.alive_enemies.items) |enemy| {
-            enemy.draw();
+        for (&self.enemies) |*row| {
+            for (row) |*enemy| {
+                enemy.draw();
+            }
         }
     }
 };

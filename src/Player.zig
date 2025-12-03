@@ -28,6 +28,12 @@ fn checkLose(self: *@This(), game: *Game) void {
             game.lose();
         }
     }
+
+    for (game.enemy_group.alive_enemies.items) |enemy| {
+        if (self.bounds.checkCollision(enemy.bounds)) {
+            game.lose();
+        }
+    }
 }
 
 pub fn update(self: *@This(), game: *Game, delta_time: f32) void {
