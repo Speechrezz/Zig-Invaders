@@ -22,7 +22,7 @@ const seconds_per_move = 0.5;
 const distance_per_move = 4.0;
 const distance_per_drop = 24.0;
 
-const pause_time_seconds = 0.2;
+const pause_time_seconds = 0.1;
 const reload_time_seconds = 1.2;
 
 pub fn init(self: *@This(), group: *Group) void {
